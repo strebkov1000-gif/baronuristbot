@@ -1,305 +1,224 @@
-// Prisma Schema для PRAVO XII Telegram Bot
+generator client {
+  provider = "prisma-client-js"
+}
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
-generator client {
-  provider = "prisma-client-js"
-}
-
-// Пользователи бота
-model User {
-  id            String   @id @default(cuid())
-  telegramId    BigInt   @unique
-  username      String?
-  firstName     String?
-  lastName      String?
-
-  // Реферальная система
-  referralCode  String?  @unique // Уникальный реферальный код
-  referredById  String?  // ID пользователя, который пригласил
-  referredBy    User?    @relation("Referrals", fields: [referredById], references: [id])
-  referrals     User[]   @relation("Referrals") // Пользователи, которых пригласил этот юзер
-  referralBonus Int      @default(0) // Накопленный бонус в центах USD
-
-  // Связи
-  bookings      Booking[]
-  reservations  Reservation[]
-  payments      Payment[]
-  surveys       UserSurvey[]
-
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-
-  @@index([telegramId])
-  @@index([referralCode])
-  @@map("users")
-}
-
-// Услуги
-model Service {
-  id              String    @id @default(cuid())
-  serviceId       String    @unique // service_online, service_written, service_conclusion, service_other
-  name            String
-  nameEn          String?
-  description     String    @db.Text
-  stages          String    @db.Text // JSON массив этапов работы
-  priceUsd        Int       // Цена в центах USD (4000 = 40.00$)
-  durationMinutes Int       // Длительность в минутах (60)
-  requiresBooking Boolean   @default(true) // false для service_other
-
-  // Связи
-  bookings        Booking[]
-
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-
-  @@index([serviceId])
-  @@map("services")
-}
-
-// Бронирования
-model Booking {
-  id              String         @id @default(cuid())
-
-  // Связи
-  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId          String
-  service         Service        @relation(fields: [serviceId], references: [id])
-  serviceId       String
-
-  // Дата и время (Москва UTC+3)
-  startTime       DateTime
-  endTime         DateTime
-
-  // Статусы
-  status          BookingStatus  @default(PENDING)
-  paymentStatus   PaymentStatus  @default(PENDING)
-
-  // Оплата
-  payment         Payment?
-
-  // Отмена
-  cancelledAt     DateTime?
-  cancellationReason String?    @db.Text
-
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
-
-  @@unique([userId, startTime]) // Пользователь не может забронировать одно время дважды
-  @@index([userId])
-  @@index([serviceId])
-  @@index([startTime])
-  @@index([status])
-  @@index([paymentStatus])
-  @@map("bookings")
-}
-
-// Временное резервирование слотов (30 минут)
-model Reservation {
-  id              String             @id @default(cuid())
-
-  user            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId          String
-
-  serviceId       String             // ID услуги
-  startTime       DateTime           // Время слота
-  endTime         DateTime           // Конец слота
-  expiresAt       DateTime           // Истекает через 30 минут
-
-  status          ReservationStatus  @default(ACTIVE)
-
-  createdAt       DateTime           @default(now())
-
-  @@index([userId])
-  @@index([expiresAt])
-  @@index([status])
-  @@index([startTime])
-  @@map("reservations")
-}
-
-// Платежи в TON
-model Payment {
-  id                String        @id @default(cuid())
-
-  // Связи
-  booking           Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  bookingId         String        @unique
-  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId            String
-
-  // Сумма
-  amountUsd         Int           // Сумма в центах USD (1000 = 10.00$)
-  amountTon         String?       // Сумма в TON/USDT (для отображения)
-
-  // TON реквизиты
-  recipientAddress  String        // Адрес кошелька для приема (наш)
-  senderAddress     String?       // Адрес отправителя (когда платеж поступил)
-
-  // Статус и транзакция
-  status            PaymentStatus @default(PENDING)
-  tonTransactionHash String?      @unique
-  tonTransactionLt   String?      // Logical time транзакции
-
-  // Временные метки
-  initiatedAt       DateTime      @default(now())
-  completedAt       DateTime?
-  expiresAt         DateTime      // Платёж действителен 1 час
-
-  // Информация о промокоде (было: memo)
-  promoInfo         String?       // Информация о применённом промокоде
-
-  // MEMO для автоматического сопоставления платежей
-  paymentMemo       String?       @unique  // Уникальный идентификатор (ORD-XXXXXX)
-  memoMatchStatus   MemoMatchStatus @default(AWAITING)
-  receivedAmountUsd Int?          // Фактически полученная сумма в центах
-
-  @@index([userId])
-  @@index([status])
-  @@index([tonTransactionHash])
-  @@index([paymentMemo])
-  @@map("payments")
-}
-
-// Анкеты пользователей (после оплаты или для service_other)
-model UserSurvey {
-  id              String   @id @default(cuid())
-
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId          String
-
-  serviceId       String   // ID услуги
-  bookingId       String?  // ID бронирования (null для service_other)
-
-  // Ответы на вопросы
-  fullName        String
-  phoneNumber     String
-  problemDescription String  @db.Text
-  voiceMessageFileId String? // file_id голосового сообщения в Telegram
-  materialsLink   String?  // Ссылка на облако с материалами
-
-  // Статус обработки
-  status          SurveyStatus @default(PENDING)
-  processedAt     DateTime?
-
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  @@index([userId])
-  @@index([status])
-  @@map("user_surveys")
-}
-
-// Доступные слоты (создаются админом)
-model AvailableSlot {
-  id              String         @id @default(cuid())
-
-  date            DateTime       @db.Date  // Только дата
-  startTime       String         // Время начала "12:00"
-  endTime         String         // Время окончания "13:00"
-
-  isBooked        Boolean        @default(false)
-  bookingId       String?        // ID бронирования (если занят)
-
-  createdBy       BigInt         // Telegram ID админа
-  createdAt       DateTime       @default(now())
+model available_slots {
+  id        String   @id
+  date      DateTime @db.Date
+  startTime String
+  endTime   String
+  isBooked  Boolean  @default(false)
+  bookingId String?
+  createdBy BigInt
+  createdAt DateTime @default(now())
 
   @@unique([date, startTime])
   @@index([date])
   @@index([isBooked])
-  @@map("available_slots")
 }
 
-// Enum для статусов бронирования
-enum BookingStatus {
-  PENDING      // Ожидает оплаты
-  CONFIRMED    // Подтверждено (оплачено)
-  COMPLETED    // Консультация проведена
-  CANCELLED    // Отменено
-  EXPIRED      // Истекло время оплаты
+model bookings {
+  id                   String         @id
+  userId               String
+  serviceId            String
+  startTime            DateTime
+  endTime              DateTime
+  status               booking_status @default(PENDING)
+  paymentStatus        payment_status @default(PENDING)
+  cancelledAt          DateTime?
+  cancellationReason   String?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime
+  paymentType          payment_type   @default(PREPAYMENT)
+  prepaidAmountUsd     Int            @default(0)
+  remainingAmountUsd   Int            @default(0)
+  totalPriceUsd        Int            @default(0)
+  remainingPaymentMemo String?
+  services             services       @relation(fields: [serviceId], references: [id])
+  users                users          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payments             payments?
 
-  @@map("booking_status")
+  @@unique([userId, startTime])
+  @@index([paymentStatus])
+  @@index([serviceId])
+  @@index([startTime])
+  @@index([status])
+  @@index([userId])
 }
 
-// Enum для статусов оплаты
-enum PaymentStatus {
-  PENDING      // Ожидает оплаты
-  PROCESSING   // В процессе проверки
-  COMPLETED    // Оплачено
-  FAILED       // Не удалось
-  EXPIRED      // Истекло время оплаты
+model payments {
+  id                 String            @id
+  bookingId          String            @unique
+  userId             String
+  amountUsd          Int
+  amountTon          String?
+  recipientAddress   String
+  senderAddress      String?
+  status             payment_status    @default(PENDING)
+  tonTransactionHash String?           @unique
+  tonTransactionLt   String?
+  initiatedAt        DateTime          @default(now())
+  completedAt        DateTime?
+  expiresAt          DateTime
+  memoMatchStatus    memo_match_status @default(AWAITING)
+  paymentMemo        String?           @unique
+  promoInfo          String?
+  receivedAmountUsd  Int?
+  bookings           bookings          @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  users              users             @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@map("payment_status")
+  @@index([paymentMemo])
+  @@index([status])
+  @@index([tonTransactionHash])
+  @@index([userId])
 }
 
-// Enum для статусов резервирования
-enum ReservationStatus {
-  ACTIVE       // Активно
-  USED         // Использовано (создано бронирование)
-  EXPIRED      // Истекло
-  CANCELLED    // Отменено
+model promo_code_usages {
+  id             String      @id
+  promoCodeId    String
+  userId         String
+  bookingId      String
+  discountAmount Int
+  createdAt      DateTime    @default(now())
+  promo_codes    promo_codes @relation(fields: [promoCodeId], references: [id])
 
-  @@map("reservation_status")
+  @@unique([promoCodeId, userId])
+  @@index([userId])
 }
 
-// Enum для статусов анкет
-enum SurveyStatus {
-  PENDING      // Ожидает обработки
-  PROCESSING   // В процессе обработки
-  COMPLETED    // Обработано
-
-  @@map("survey_status")
-}
-
-// Enum для статусов сопоставления MEMO
-enum MemoMatchStatus {
-  AWAITING      // Ожидает платёж с memo
-  MATCHED       // Memo найден и сопоставлен
-  MANUAL_REVIEW // Отсутствует/неверный memo - требует ручной проверки
-  INSUFFICIENT  // Сумма меньше требуемой
-
-  @@map("memo_match_status")
-}
-
-// Промокоды
-model PromoCode {
-  id              String    @id @default(cuid())
-  code            String    @unique  // Код промокода (WELCOME, VIP2025)
-
-  // Скидка (только процент)
-  discountPercent Int       // Процент скидки (20 = 20%)
-
-  // Ограничения
-  expiresAt       DateTime  // Срок действия
-  serviceId       String?   // Привязка к услуге (null = все услуги)
-
-  // Статус
-  isActive        Boolean   @default(true)
-
-  // История использования
-  usages          PromoCodeUsage[]
-
-  createdBy       BigInt    // Telegram ID админа
-  createdAt       DateTime  @default(now())
+model promo_codes {
+  id                String              @id
+  code              String              @unique
+  discountPercent   Int
+  expiresAt         DateTime
+  serviceId         String?
+  isActive          Boolean             @default(true)
+  createdBy         BigInt
+  createdAt         DateTime            @default(now())
+  promo_code_usages promo_code_usages[]
 
   @@index([code])
   @@index([isActive])
-  @@map("promo_codes")
 }
 
-// История использования промокодов
-model PromoCodeUsage {
-  id            String    @id @default(cuid())
-  promoCode     PromoCode @relation(fields: [promoCodeId], references: [id])
-  promoCodeId   String
-  userId        String    // ID пользователя
-  bookingId     String    // ID бронирования
-  discountAmount Int      // Сумма скидки в центах USD
-  createdAt     DateTime  @default(now())
+model reservations {
+  id        String             @id
+  userId    String
+  serviceId String
+  startTime DateTime
+  endTime   DateTime
+  expiresAt DateTime
+  status    reservation_status @default(ACTIVE)
+  createdAt DateTime           @default(now())
+  users     users              @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([promoCodeId, userId])  // Один пользователь - один промокод
+  @@index([expiresAt])
+  @@index([startTime])
+  @@index([status])
   @@index([userId])
-  @@map("promo_code_usages")
+}
+
+model services {
+  id              String     @id
+  serviceId       String     @unique
+  name            String
+  nameEn          String?
+  description     String
+  stages          String
+  priceUsd        Int
+  durationMinutes Int
+  requiresBooking Boolean    @default(true)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime
+  bookings        bookings[]
+
+  @@index([serviceId])
+}
+
+model user_surveys {
+  id                 String        @id
+  userId             String
+  serviceId          String
+  bookingId          String?
+  fullName           String
+  phoneNumber        String
+  problemDescription String
+  voiceMessageFileId String?
+  materialsLink      String?
+  status             survey_status @default(PENDING)
+  processedAt        DateTime?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime
+  users              users         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([userId])
+}
+
+model users {
+  id            String         @id
+  telegramId    BigInt         @unique
+  username      String?
+  firstName     String?
+  lastName      String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime
+  referralBonus Int            @default(0)
+  referralCode  String?        @unique
+  referredById  String?
+  bookings      bookings[]
+  payments      payments[]
+  reservations  reservations[]
+  user_surveys  user_surveys[]
+  users         users?         @relation("usersTousers", fields: [referredById], references: [id])
+  other_users   users[]        @relation("usersTousers")
+
+  @@index([referralCode])
+  @@index([telegramId])
+}
+
+enum booking_status {
+  PENDING
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  EXPIRED
+}
+
+enum memo_match_status {
+  AWAITING
+  MATCHED
+  MANUAL_REVIEW
+  INSUFFICIENT
+}
+
+enum payment_status {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  EXPIRED
+}
+
+enum payment_type {
+  FULL
+  PREPAYMENT
+}
+
+enum reservation_status {
+  ACTIVE
+  USED
+  EXPIRED
+  CANCELLED
+}
+
+enum survey_status {
+  PENDING
+  PROCESSING
+  COMPLETED
 }

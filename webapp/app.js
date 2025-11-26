@@ -31,7 +31,12 @@ const state = {
   originalPrepayment: 0,
   discountedPrepayment: 0,
   // MEMO для платежа
-  paymentMemo: null
+  paymentMemo: null,
+  // Тип оплаты
+  paymentType: 'PREPAYMENT', // PREPAYMENT или FULL
+  fullPrice: 0,           // Полная стоимость в центах
+  prepaymentPrice: 0,     // Предоплата (25%) в центах
+  currentPaymentAmount: 0 // Текущая сумма к оплате в центах
 };
 
 // Иконки для услуг
@@ -45,11 +50,54 @@ const serviceIcons = {
 // TON wallet address (for USDT on TON network)
 const TON_WALLET = 'UQCVeQzrFSinGaW-rX-_kBh5AJxpok2NMtzg9VmqGiMgYOW8';
 
+// Парсинг initData для получения user ID
+function parseInitData(initData) {
+  if (!initData) return null;
+  try {
+    const params = new URLSearchParams(initData);
+    const userStr = params.get('user');
+    if (userStr) {
+      const user = JSON.parse(decodeURIComponent(userStr));
+      return user.id;
+    }
+  } catch (e) {
+    console.error('Ошибка парсинга initData:', e);
+  }
+  return null;
+}
+
 // Инициализация
 document.addEventListener('DOMContentLoaded', async () => {
   // Получаем данные пользователя из Telegram
+  console.log('🔍 initDataUnsafe:', tg.initDataUnsafe);
+  console.log('🔍 initData:', tg.initData);
+  console.log('🔍 tg object:', tg);
+
+  // Способ 1: из initDataUnsafe
   if (tg.initDataUnsafe && tg.initDataUnsafe.user) {
     state.telegramId = tg.initDataUnsafe.user.id;
+    console.log('✅ Telegram ID из initDataUnsafe:', state.telegramId);
+  }
+  // Способ 2: парсинг initData
+  else if (tg.initData) {
+    const userId = parseInitData(tg.initData);
+    if (userId) {
+      state.telegramId = userId;
+      console.log('✅ Telegram ID из initData:', state.telegramId);
+    }
+  }
+  // Способ 3: из URL параметров (для тестирования)
+  if (!state.telegramId) {
+    const urlParams = new URLSearchParams(window.location.search);
+    const testId = urlParams.get('tgWebAppUserId') || urlParams.get('user_id');
+    if (testId) {
+      state.telegramId = parseInt(testId);
+      console.log('✅ Telegram ID из URL:', state.telegramId);
+    }
+  }
+
+  if (!state.telegramId) {
+    console.error('❌ Не удалось получить Telegram ID ни одним способом');
   }
 
   setupTabNavigation();
@@ -240,9 +288,24 @@ function renderBookings() {
     const statusEmoji = booking.status === 'CONFIRMED' ? '✅' : '⏳';
     const statusText = booking.status === 'CONFIRMED' ? 'Подтверждено' : 'Ожидает оплаты';
     const statusClass = booking.status === 'CONFIRMED' ? 'confirmed' : 'pending';
+    const isPending = booking.status === 'PENDING';
+
+    // Проверяем, есть ли остаток к оплате для подтверждённых бронирований
+    const hasRemainingPayment = booking.status === 'CONFIRMED' &&
+                                 booking.remainingAmountUsd &&
+                                 booking.remainingAmountUsd > 0;
+    const remainingUsd = hasRemainingPayment ? (booking.remainingAmountUsd / 100).toFixed(0) : 0;
+
+    // Определяем, кликабельна ли карточка
+    const isClickable = isPending || hasRemainingPayment;
+    const clickHandler = isPending
+      ? `onclick="showBookingPayment('${booking.id}')"`
+      : hasRemainingPayment
+        ? `onclick="showRemainingPayment('${booking.id}')"`
+        : '';
 
     return `
-      <div class="booking-card">
+      <div class="booking-card ${isClickable ? 'clickable' : ''}" ${clickHandler}>
         <div class="booking-header">
           <div class="booking-service">${booking.serviceName}</div>
           <div class="booking-status ${statusClass}">${statusEmoji} ${statusText}</div>
@@ -257,9 +320,434 @@ function renderBookings() {
             <span>$${(booking.priceUsd / 100).toFixed(0)}</span>
           </div>
         </div>
+        ${isPending ? `
+          <div class="booking-action">
+            <span class="action-text">Нажмите для оплаты →</span>
+          </div>
+        ` : ''}
+        ${hasRemainingPayment ? `
+          <div class="booking-remaining">
+            <div class="remaining-info">
+              <span class="remaining-icon">💳</span>
+              <span class="remaining-text">Остаток к оплате: <strong>${remainingUsd} USDT</strong></span>
+            </div>
+            <div class="booking-action">
+              <span class="action-text">Нажмите для оплаты остатка →</span>
+            </div>
+          </div>
+        ` : ''}
       </div>
     `;
   }).join('');
+}
+
+// Текущее открытое бронирование для страницы оплаты
+let currentPaymentBooking = null;
+
+async function showBookingPayment(bookingId) {
+  try {
+    // Загружаем детали бронирования с платёжной информацией
+    const response = await fetch(`/api/booking/${bookingId}`);
+    if (!response.ok) throw new Error('Failed to load booking');
+
+    const booking = await response.json();
+    currentPaymentBooking = booking;
+
+    // Скрываем tabs и показываем детали платежа
+    document.querySelector('.tabs-nav').classList.add('hidden');
+    document.getElementById('tab-bookings').classList.add('hidden');
+
+    const container = document.getElementById('bookings-container');
+    container.parentElement.classList.remove('hidden');
+
+    const startTime = new Date(booking.startTime);
+    const dateStr = startTime.toLocaleDateString('ru-RU', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
+    });
+    const timeStr = startTime.toLocaleTimeString('ru-RU', {
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
+    // Проверяем, есть ли уже применённая скидка
+    const hasDiscount = booking.promoInfo && booking.promoInfo.length > 0;
+
+    container.innerHTML = `
+      <div class="payment-details-page">
+        <button class="back-button" onclick="closeBookingPayment()">
+          <span class="back-arrow">←</span> К записям
+        </button>
+
+        <h2 class="page-title">Оплата записи</h2>
+
+        <div class="booking-summary">
+          <div class="summary-row">
+            <span class="summary-label">Услуга:</span>
+            <span class="summary-value">${booking.serviceName}</span>
+          </div>
+          <div class="summary-row">
+            <span class="summary-label">Дата:</span>
+            <span class="summary-value">${dateStr}</span>
+          </div>
+          <div class="summary-row">
+            <span class="summary-label">Время:</span>
+            <span class="summary-value">${timeStr} (МСК)</span>
+          </div>
+          <div class="summary-row highlight">
+            <span class="summary-label">К оплате:</span>
+            <span class="summary-value" id="payment-amount">${booking.prepaymentUsd} USDT</span>
+          </div>
+        </div>
+
+        <!-- Промокод -->
+        ${!hasDiscount ? `
+        <div class="promo-section">
+          <div class="promo-title">🎁 Есть промокод?</div>
+          <div class="promo-input-row">
+            <input type="text" id="booking-promo-code" class="promo-input" placeholder="Введите промокод" maxlength="20">
+            <button class="button button-secondary" id="apply-booking-promo">Применить</button>
+          </div>
+          <div id="booking-promo-result" class="promo-result hidden"></div>
+        </div>
+        ` : `
+        <div class="promo-applied">
+          <span class="promo-applied-icon">✅</span>
+          <span class="promo-applied-text">${booking.promoInfo}</span>
+        </div>
+        `}
+
+        <div class="payment-info-box">
+          <div class="payment-info-title">💳 Данные для оплаты</div>
+
+          <div class="payment-field">
+            <div class="payment-label">Адрес кошелька (USDT TON):</div>
+            <div class="payment-value">${TON_WALLET}</div>
+            <button class="copy-btn" onclick="copyToClipboard('${TON_WALLET}'); tg.showAlert('Адрес скопирован!');">📋</button>
+          </div>
+
+          <div class="payment-field">
+            <div class="payment-label">Комментарий (ОБЯЗАТЕЛЬНО!):</div>
+            <div class="payment-value payment-memo">${booking.paymentMemo}</div>
+            <button class="copy-btn" onclick="copyToClipboard('${booking.paymentMemo}'); tg.showAlert('Комментарий скопирован!');">📋</button>
+          </div>
+        </div>
+
+        <div class="warning-box">
+          ⚠️ Отправьте <b>ровно <span id="warning-amount">${booking.prepaymentUsd}</span> USDT</b> в сети TON с указанием комментария.<br><br>
+          <b>Без комментария платёж не будет зачислен!</b>
+        </div>
+
+        <div class="payment-auto-info">
+          ✅ Платёж будет зачислен автоматически в течение 1-2 минут
+        </div>
+      </div>
+    `;
+
+    // Добавляем обработчик для промокода если секция существует
+    const promoBtn = document.getElementById('apply-booking-promo');
+    if (promoBtn) {
+      promoBtn.addEventListener('click', () => applyBookingPromoCode(bookingId));
+      document.getElementById('booking-promo-code').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') applyBookingPromoCode(bookingId);
+      });
+    }
+
+  } catch (error) {
+    console.error('Error loading booking:', error);
+    tg.showAlert('Ошибка загрузки данных');
+  }
+}
+
+async function applyBookingPromoCode(bookingId) {
+  const promoInput = document.getElementById('booking-promo-code');
+  const promoBtn = document.getElementById('apply-booking-promo');
+  const promoResult = document.getElementById('booking-promo-result');
+
+  const code = promoInput.value.trim().toUpperCase();
+
+  if (!code) {
+    promoResult.textContent = 'Введите промокод';
+    promoResult.className = 'promo-result error';
+    promoResult.classList.remove('hidden');
+    return;
+  }
+
+  if (!state.telegramId) {
+    promoResult.textContent = 'Ошибка: откройте приложение через бота';
+    promoResult.className = 'promo-result error';
+    promoResult.classList.remove('hidden');
+    return;
+  }
+
+  promoBtn.disabled = true;
+  promoBtn.textContent = '...';
+
+  try {
+    // Применяем промокод к бронированию
+    const response = await fetch('/api/booking/apply-promo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        bookingId: bookingId,
+        promoCode: code,
+        telegramId: state.telegramId
+      })
+    });
+
+    const result = await response.json();
+
+    if (result.success) {
+      // Обновляем сумму на странице
+      document.getElementById('payment-amount').textContent = result.newAmount + ' USDT';
+      document.getElementById('warning-amount').textContent = result.newAmount;
+
+      promoResult.textContent = `Промокод применён! Скидка ${result.discountPercent}%`;
+      promoResult.className = 'promo-result success';
+      promoResult.classList.remove('hidden');
+
+      promoInput.disabled = true;
+      promoBtn.textContent = 'Применён';
+    } else {
+      promoResult.textContent = result.error || 'Недействительный промокод';
+      promoResult.className = 'promo-result error';
+      promoResult.classList.remove('hidden');
+      promoBtn.disabled = false;
+      promoBtn.textContent = 'Применить';
+    }
+  } catch (error) {
+    console.error('Promo error:', error);
+    promoResult.textContent = 'Ошибка сети';
+    promoResult.className = 'promo-result error';
+    promoResult.classList.remove('hidden');
+    promoBtn.disabled = false;
+    promoBtn.textContent = 'Применить';
+  }
+}
+
+function closeBookingPayment() {
+  // Показываем tabs обратно
+  document.querySelector('.tabs-nav').classList.remove('hidden');
+  document.getElementById('tab-bookings').classList.remove('hidden');
+
+  // Перезагружаем список записей
+  loadUserBookings();
+}
+
+// Состояние для оплаты остатка
+let remainingPaymentState = {
+  bookingId: null,
+  booking: null,
+  paymentMemo: null,
+  remainingAmount: 0,  // в центах
+  selectedAmount: 0    // выбранная сумма к оплате в центах
+};
+
+// Показать страницу оплаты остатка с выбором суммы
+async function showRemainingPayment(bookingId) {
+  try {
+    // Находим бронирование в state
+    const booking = state.bookings.find(b => b.id === bookingId);
+    if (!booking) {
+      tg.showAlert('Бронирование не найдено');
+      return;
+    }
+
+    // Сохраняем в состояние
+    remainingPaymentState.bookingId = bookingId;
+    remainingPaymentState.booking = booking;
+    remainingPaymentState.remainingAmount = booking.remainingAmountUsd;
+
+    // Скрываем tabs
+    document.querySelector('.tabs-nav').classList.add('hidden');
+    document.getElementById('tab-bookings').classList.add('hidden');
+
+    const container = document.getElementById('bookings-container');
+    container.parentElement.classList.remove('hidden');
+
+    // Показываем загрузку пока получаем MEMO
+    container.innerHTML = `
+      <div class="payment-details-page">
+        <div class="loader"></div>
+        <p style="text-align: center; margin-top: 16px;">Подготовка платежа...</p>
+      </div>
+    `;
+
+    // Получаем или генерируем MEMO
+    let paymentMemo = booking.remainingPaymentMemo;
+    if (!paymentMemo) {
+      try {
+        const response = await fetch('/api/booking/pay-remaining', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            bookingId: bookingId,
+            telegramId: state.telegramId
+          })
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+          paymentMemo = result.paymentMemo;
+          booking.remainingPaymentMemo = paymentMemo;
+        } else {
+          tg.showAlert(result.error || 'Ошибка создания платежа');
+          closeBookingPayment();
+          return;
+        }
+      } catch (error) {
+        console.error('Error creating remaining payment:', error);
+        tg.showAlert('Ошибка сети');
+        closeBookingPayment();
+        return;
+      }
+    }
+
+    remainingPaymentState.paymentMemo = paymentMemo;
+
+    // Рассчитываем суммы
+    const totalPriceUsd = booking.totalPriceUsd; // в центах
+    const prepaidAmountUsd = booking.prepaidAmountUsd; // в центах
+    const remainingAmountUsd = booking.remainingAmountUsd; // в центах
+
+    // Минимальный платёж - 25% от остатка (но минимум то что осталось если меньше)
+    const minPayment = Math.min(Math.ceil(remainingAmountUsd * 0.25), remainingAmountUsd);
+
+    // По умолчанию выбрана полная оплата остатка
+    remainingPaymentState.selectedAmount = remainingAmountUsd;
+
+    const startTime = new Date(booking.startTime);
+    const dateStr = startTime.toLocaleDateString('ru-RU', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
+    });
+    const timeStr = startTime.toLocaleTimeString('ru-RU', {
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
+    // Отображаем страницу с выбором типа оплаты
+    container.innerHTML = `
+      <div class="payment-details-page">
+        <button class="back-button" onclick="closeBookingPayment()">
+          <span class="back-arrow">←</span> К записям
+        </button>
+
+        <h2 class="page-title">💳 Оплата</h2>
+
+        <div class="booking-summary">
+          <div class="summary-row">
+            <span class="summary-label">Услуга:</span>
+            <span class="summary-value">${booking.serviceName}</span>
+          </div>
+          <div class="summary-row">
+            <span class="summary-label">Дата:</span>
+            <span class="summary-value">${dateStr}</span>
+          </div>
+          <div class="summary-row">
+            <span class="summary-label">Время:</span>
+            <span class="summary-value">${timeStr} (МСК)</span>
+          </div>
+          <div class="summary-divider"></div>
+          <div class="summary-row">
+            <span class="summary-label">Полная стоимость:</span>
+            <span class="summary-value">$${(totalPriceUsd / 100).toFixed(0)}</span>
+          </div>
+          <div class="summary-row success-row">
+            <span class="summary-label">✅ Уже оплачено:</span>
+            <span class="summary-value success-text">$${(prepaidAmountUsd / 100).toFixed(0)}</span>
+          </div>
+          <div class="summary-row highlight">
+            <span class="summary-label">Остаток к оплате:</span>
+            <span class="summary-value">${(remainingAmountUsd / 100).toFixed(0)} USDT</span>
+          </div>
+        </div>
+
+        <!-- Выбор типа оплаты -->
+        <div class="payment-type-selection">
+          <div class="payment-type-option" id="remaining-option-partial" onclick="selectRemainingPaymentType('PARTIAL')">
+            <div class="payment-type-radio"></div>
+            <div class="payment-type-content">
+              <div class="payment-type-title">Частичная оплата (25%)</div>
+              <div class="payment-type-amount">${(minPayment / 100).toFixed(0)} USDT</div>
+              <div class="payment-type-desc">Оставшаяся сумма: ${((remainingAmountUsd - minPayment) / 100).toFixed(0)} USDT</div>
+            </div>
+          </div>
+          <div class="payment-type-option selected" id="remaining-option-full" onclick="selectRemainingPaymentType('FULL')">
+            <div class="payment-type-radio"></div>
+            <div class="payment-type-content">
+              <div class="payment-type-title">Полная оплата остатка</div>
+              <div class="payment-type-amount">${(remainingAmountUsd / 100).toFixed(0)} USDT</div>
+              <div class="payment-type-desc">Закрыть всю задолженность</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="summary-row highlight" style="margin: 16px 0; padding: 12px; background: var(--bg-secondary); border-radius: 8px;">
+          <span class="summary-label">К оплате сейчас:</span>
+          <span class="summary-value" id="remaining-payment-amount">${(remainingAmountUsd / 100).toFixed(0)} USDT</span>
+        </div>
+
+        <div class="payment-info-box">
+          <div class="payment-info-title">💳 Данные для оплаты</div>
+
+          <div class="payment-field">
+            <div class="payment-label">Адрес кошелька (USDT TON):</div>
+            <div class="payment-value">${TON_WALLET}</div>
+            <button class="copy-btn" onclick="copyToClipboard('${TON_WALLET}'); tg.showAlert('Адрес скопирован!');">📋</button>
+          </div>
+
+          <div class="payment-field">
+            <div class="payment-label">Комментарий (ОБЯЗАТЕЛЬНО!):</div>
+            <div class="payment-value payment-memo">${paymentMemo}</div>
+            <button class="copy-btn" onclick="copyToClipboard('${paymentMemo}'); tg.showAlert('Комментарий скопирован!');">📋</button>
+          </div>
+        </div>
+
+        <div class="warning-box">
+          ⚠️ Отправьте <b>ровно <span id="remaining-warning-amount">${(remainingAmountUsd / 100).toFixed(0)}</span> USDT</b> в сети TON с указанием комментария.<br><br>
+          <b>Без комментария платёж не будет зачислен!</b>
+        </div>
+
+        <div class="payment-auto-info">
+          ✅ Платёж будет зачислен автоматически в течение 1-2 минут
+        </div>
+      </div>
+    `;
+
+  } catch (error) {
+    console.error('Error showing remaining payment:', error);
+    tg.showAlert('Ошибка загрузки данных');
+  }
+}
+
+// Выбор типа оплаты остатка
+function selectRemainingPaymentType(type) {
+  const booking = remainingPaymentState.booking;
+  const remainingAmountUsd = booking.remainingAmountUsd;
+  const minPayment = Math.min(Math.ceil(remainingAmountUsd * 0.25), remainingAmountUsd);
+
+  // Обновляем выделение
+  document.getElementById('remaining-option-partial').classList.toggle('selected', type === 'PARTIAL');
+  document.getElementById('remaining-option-full').classList.toggle('selected', type === 'FULL');
+
+  // Обновляем сумму
+  let amount;
+  if (type === 'PARTIAL') {
+    amount = minPayment;
+  } else {
+    amount = remainingAmountUsd;
+  }
+
+  remainingPaymentState.selectedAmount = amount;
+
+  // Обновляем UI
+  const amountStr = (amount / 100).toFixed(0);
+  document.getElementById('remaining-payment-amount').textContent = `${amountStr} USDT`;
+  document.getElementById('remaining-warning-amount').textContent = amountStr;
 }
 
 // ===================
@@ -267,7 +755,11 @@ function renderBookings() {
 // ===================
 
 async function loadUserData() {
-  if (!state.telegramId) return;
+  if (!state.telegramId) {
+    console.warn('loadUserData: telegramId не установлен');
+    renderReferralsError();
+    return;
+  }
 
   try {
     const response = await fetch(`/api/user/${state.telegramId}`);
@@ -279,6 +771,17 @@ async function loadUserData() {
     console.error('Error loading user data:', error);
     renderReferrals();
   }
+}
+
+function renderReferralsError() {
+  const container = document.getElementById('referrals-container');
+  container.innerHTML = `
+    <div class="empty-state">
+      <div class="empty-icon">⚠️</div>
+      <h3>Не удалось загрузить данные</h3>
+      <p>Откройте приложение через кнопку в боте @pravoxiibot</p>
+    </div>
+  `;
 }
 
 function renderReferrals() {
@@ -637,8 +1140,62 @@ async function showConfirmation() {
   document.getElementById('confirm-date').textContent = dateStr;
   document.getElementById('confirm-time').textContent = `${state.selectedSlot.startTime} - ${state.selectedSlot.endTime} (МСК)`;
 
+  // Рассчитываем цены В ЦЕНТАХ (servicePrice хранится в долларах)
+  state.fullPrice = Math.round(state.servicePrice * 100); // В центах
+  state.prepaymentPrice = Math.ceil(state.fullPrice * 0.25); // 25% предоплата в центах
+
+  // Показываем цены в выборе типа оплаты
+  document.getElementById('prepayment-amount').textContent = `${(state.prepaymentPrice / 100).toFixed(0)} USDT`;
+  document.getElementById('full-amount').textContent = `${(state.fullPrice / 100).toFixed(0)} USDT`;
+
+  // По умолчанию выбрана предоплата
+  state.paymentType = 'PREPAYMENT';
+  state.currentPaymentAmount = state.prepaymentPrice;
+  updatePaymentTypeUI();
+
   // Загружаем MEMO для платежа
   await loadPaymentMemo();
+}
+
+// Функция выбора типа оплаты
+function selectPaymentType(type) {
+  state.paymentType = type;
+
+  if (type === 'FULL') {
+    state.currentPaymentAmount = state.fullPrice;
+  } else {
+    state.currentPaymentAmount = state.prepaymentPrice;
+  }
+
+  updatePaymentTypeUI();
+}
+
+// Обновляем UI выбора типа оплаты
+// ВАЖНО: state.currentPaymentAmount, state.fullPrice, state.prepaymentPrice - всё в ЦЕНТАХ!
+function updatePaymentTypeUI() {
+  // Обновляем выделение опций
+  document.getElementById('option-prepayment').classList.toggle('selected', state.paymentType === 'PREPAYMENT');
+  document.getElementById('option-full').classList.toggle('selected', state.paymentType === 'FULL');
+
+  // Применяем скидку если есть промокод (всё в центах)
+  let amountToPay = state.currentPaymentAmount; // в центах
+  if (state.appliedPromoCode) {
+    amountToPay = Math.ceil(amountToPay * (100 - state.appliedPromoCode.discountPercent) / 100);
+  }
+
+  // Обновляем сумму к оплате (конвертируем центы в доллары для отображения)
+  const amountUsdt = (amountToPay / 100).toFixed(0);
+  document.getElementById('confirm-prepayment').textContent = `${amountUsdt} USDT`;
+  document.getElementById('ton-amount').textContent = amountUsdt;
+
+  // Сохраняем суммы в ЦЕНТАХ для промокода
+  state.originalPrepayment = state.currentPaymentAmount; // в центах!
+  state.discountedPrepayment = amountToPay; // в центах!
+
+  // Если промокод применён, обновляем и его отображение
+  if (state.appliedPromoCode) {
+    document.getElementById('final-prepayment').textContent = `${amountUsdt} USDT`;
+  }
 }
 
 async function loadPaymentMemo() {
@@ -662,15 +1219,40 @@ async function loadPaymentMemo() {
   }
 }
 
-function confirmBooking() {
+// Состояние ожидания оплаты
+let paymentWaitingState = {
+  bookingId: null,
+  paymentMemo: null,
+  paymentAmount: 0,
+  checkInterval: null,
+  isChecking: false
+};
+
+async function confirmBooking() {
+  const confirmBtn = document.getElementById('confirm-booking');
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = 'Создание записи...';
+
   const dateStr = formatDateISO(state.selectedDate);
 
+  // Рассчитываем сумму к оплате
+  let paymentAmount = state.currentPaymentAmount;
+  if (state.appliedPromoCode) {
+    paymentAmount = Math.ceil(state.currentPaymentAmount * (100 - state.appliedPromoCode.discountPercent) / 100);
+  }
+
   const data = {
+    telegramId: state.telegramId,
     serviceId: state.serviceId,
     slotId: state.selectedSlot.id,
     date: dateStr,
     startTime: state.selectedSlot.startTime,
-    endTime: state.selectedSlot.endTime
+    endTime: state.selectedSlot.endTime,
+    paymentType: state.paymentType,
+    totalPrice: state.fullPrice,
+    paymentAmount: paymentAmount,
+    // Передаём MEMO который уже показан пользователю!
+    paymentMemo: state.paymentMemo
   };
 
   // Добавляем промокод если применён
@@ -680,9 +1262,360 @@ function confirmBooking() {
     data.discountPercent = state.appliedPromoCode.discountPercent;
   }
 
-  // Отправляем данные в бот
-  tg.sendData(JSON.stringify(data));
-  tg.close();
+  try {
+    // Создаём бронирование через API (статус PENDING)
+    const response = await fetch('/api/booking', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(data)
+    });
+
+    const result = await response.json();
+
+    if (result.success) {
+      // Сохраняем данные для проверки оплаты
+      paymentWaitingState.bookingId = result.booking.id;
+      paymentWaitingState.paymentMemo = result.booking.paymentMemo;
+      paymentWaitingState.paymentAmount = paymentAmount;
+
+      // Показываем экран ожидания оплаты
+      showPaymentWaitingScreen(result.booking);
+    } else {
+      tg.showAlert(result.error || 'Ошибка создания записи');
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = 'Подтвердить бронирование';
+    }
+  } catch (error) {
+    console.error('Booking error:', error);
+    tg.showAlert('Ошибка сети. Попробуйте ещё раз.');
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = 'Подтвердить бронирование';
+  }
+}
+
+// Показать экран ожидания оплаты
+function showPaymentWaitingScreen(booking) {
+  // Скрываем шаг подтверждения
+  document.getElementById('confirmation-step').classList.add('hidden');
+
+  const isFullPayment = booking.paymentType === 'FULL';
+  const amountUsdt = (paymentWaitingState.paymentAmount / 100).toFixed(0);
+
+  // Создаём экран ожидания
+  const bookingFlow = document.getElementById('booking-flow');
+  bookingFlow.innerHTML = `
+    <div class="payment-waiting-container">
+      <div class="payment-waiting-header">
+        <h2>💳 Ожидание оплаты</h2>
+        <p class="payment-waiting-subtitle">Переведите средства для подтверждения записи</p>
+      </div>
+
+      <div class="payment-status-box" id="payment-status-box">
+        <div class="payment-status-icon" id="payment-status-icon">⏳</div>
+        <div class="payment-status-text" id="payment-status-text">Ожидаем поступление платежа...</div>
+      </div>
+
+      <div class="booking-summary compact">
+        <div class="summary-row">
+          <span class="summary-label">Услуга:</span>
+          <span class="summary-value">${booking.serviceName}</span>
+        </div>
+        <div class="summary-row">
+          <span class="summary-label">Дата и время:</span>
+          <span class="summary-value">${booking.date}, ${booking.time} (МСК)</span>
+        </div>
+        <div class="summary-row highlight">
+          <span class="summary-label">${isFullPayment ? 'К оплате:' : 'Предоплата:'}</span>
+          <span class="summary-value">${amountUsdt} USDT</span>
+        </div>
+      </div>
+
+      <div class="payment-info-box">
+        <div class="payment-info-title">💳 Данные для оплаты</div>
+
+        <div class="payment-field">
+          <div class="payment-label">Адрес кошелька (USDT TON):</div>
+          <div class="payment-value">${TON_WALLET}</div>
+          <button class="copy-btn" onclick="copyToClipboard('${TON_WALLET}'); tg.showAlert('Адрес скопирован!');">📋</button>
+        </div>
+
+        <div class="payment-field">
+          <div class="payment-label">Сумма:</div>
+          <div class="payment-value payment-amount-highlight">${amountUsdt} USDT</div>
+          <button class="copy-btn" onclick="copyToClipboard('${amountUsdt}'); tg.showAlert('Сумма скопирована!');">📋</button>
+        </div>
+
+        <div class="payment-field">
+          <div class="payment-label">Комментарий (ОБЯЗАТЕЛЬНО!):</div>
+          <div class="payment-value payment-memo">${booking.paymentMemo}</div>
+          <button class="copy-btn" onclick="copyToClipboard('${booking.paymentMemo}'); tg.showAlert('Комментарий скопирован!');">📋</button>
+        </div>
+      </div>
+
+      <div class="warning-box">
+        ⚠️ <b>ВАЖНО:</b><br>
+        • Отправляйте <b>USDT в сети TON</b> (не TON!)<br>
+        • <b>ОБЯЗАТЕЛЬНО</b> укажите комментарий <code>${booking.paymentMemo}</code><br>
+        • Без комментария платёж <b>НЕ БУДЕТ</b> зачислен автоматически
+      </div>
+
+      <div class="payment-actions">
+        <button class="button button-secondary" id="refresh-payment-btn" onclick="manualCheckPayment()">
+          🔄 Проверить оплату
+        </button>
+        <button class="button button-outline" onclick="cancelPaymentWaiting()">
+          ← Отмена
+        </button>
+      </div>
+
+      <div class="payment-auto-check">
+        <span class="auto-check-dot"></span>
+        Автоматическая проверка каждые 10 секунд
+      </div>
+    </div>
+  `;
+
+  // Запускаем автоматическую проверку
+  startPaymentAutoCheck();
+}
+
+// Запуск автоматической проверки оплаты
+function startPaymentAutoCheck() {
+  // Очищаем предыдущий интервал если есть
+  if (paymentWaitingState.checkInterval) {
+    clearInterval(paymentWaitingState.checkInterval);
+  }
+
+  // Первая проверка через 5 секунд
+  setTimeout(() => checkPaymentStatus(), 5000);
+
+  // Затем каждые 10 секунд
+  paymentWaitingState.checkInterval = setInterval(() => {
+    checkPaymentStatus();
+  }, 10000);
+}
+
+// Остановка автоматической проверки
+function stopPaymentAutoCheck() {
+  if (paymentWaitingState.checkInterval) {
+    clearInterval(paymentWaitingState.checkInterval);
+    paymentWaitingState.checkInterval = null;
+  }
+}
+
+// Проверка статуса оплаты
+async function checkPaymentStatus() {
+  if (paymentWaitingState.isChecking || !paymentWaitingState.bookingId) {
+    return;
+  }
+
+  paymentWaitingState.isChecking = true;
+
+  const statusIcon = document.getElementById('payment-status-icon');
+  const statusText = document.getElementById('payment-status-text');
+  const refreshBtn = document.getElementById('refresh-payment-btn');
+
+  if (statusIcon) statusIcon.textContent = '🔄';
+  if (statusText) statusText.textContent = 'Проверяем...';
+  if (refreshBtn) refreshBtn.disabled = true;
+
+  try {
+    const response = await fetch(`/api/booking/${paymentWaitingState.bookingId}/status`);
+    const result = await response.json();
+
+    if (result.status === 'CONFIRMED') {
+      // Оплата подтверждена!
+      stopPaymentAutoCheck();
+      showPaymentSuccess(result);
+    } else {
+      // Ещё не оплачено
+      if (statusIcon) statusIcon.textContent = '⏳';
+      if (statusText) statusText.textContent = 'Ожидаем поступление платежа...';
+    }
+  } catch (error) {
+    console.error('Payment check error:', error);
+    if (statusIcon) statusIcon.textContent = '⏳';
+    if (statusText) statusText.textContent = 'Ожидаем поступление платежа...';
+  } finally {
+    paymentWaitingState.isChecking = false;
+    if (refreshBtn) refreshBtn.disabled = false;
+  }
+}
+
+// Ручная проверка оплаты
+async function manualCheckPayment() {
+  const refreshBtn = document.getElementById('refresh-payment-btn');
+  if (refreshBtn) {
+    refreshBtn.disabled = true;
+    refreshBtn.textContent = '🔄 Проверяем...';
+  }
+
+  await checkPaymentStatus();
+
+  if (refreshBtn) {
+    refreshBtn.disabled = false;
+    refreshBtn.textContent = '🔄 Проверить оплату';
+  }
+}
+
+// Показать успешную оплату
+function showPaymentSuccess(result) {
+  const bookingFlow = document.getElementById('booking-flow');
+
+  bookingFlow.innerHTML = `
+    <div class="success-container">
+      <div class="success-icon">✅</div>
+      <h2 class="success-title">Оплата получена!</h2>
+      <p class="success-subtitle">Ваша запись подтверждена</p>
+
+      <div class="success-details">
+        <div class="detail-row">
+          <span class="detail-label">Услуга:</span>
+          <span class="detail-value">${result.serviceName || 'Консультация'}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Дата:</span>
+          <span class="detail-value">${result.date || ''}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Время:</span>
+          <span class="detail-value">${result.time || ''} (МСК)</span>
+        </div>
+        <div class="detail-row success-row">
+          <span class="detail-label">✅ Оплачено:</span>
+          <span class="detail-value">${result.paidAmount || paymentWaitingState.paymentAmount / 100} USDT</span>
+        </div>
+        ${result.remainingAmount > 0 ? `
+        <div class="detail-row">
+          <span class="detail-label">Остаток:</span>
+          <span class="detail-value">${result.remainingAmount} USDT</span>
+        </div>
+        ` : ''}
+      </div>
+
+      <div class="success-message">
+        <p>🎉 Спасибо! Мы свяжемся с вами для уточнения деталей консультации.</p>
+      </div>
+
+      <button class="button button-primary" onclick="goToMyBookings()">
+        Перейти к записям
+      </button>
+    </div>
+  `;
+
+  // Обновляем список записей
+  loadUserBookings();
+}
+
+// Отмена ожидания оплаты
+async function cancelPaymentWaiting() {
+  stopPaymentAutoCheck();
+
+  // Можно добавить запрос на отмену бронирования
+  // Но пока просто возвращаемся к выбору услуг
+
+  // Восстанавливаем booking-flow
+  location.reload(); // Простой способ - перезагрузить страницу
+}
+
+function showBookingSuccess(booking) {
+  // Скрываем шаг подтверждения
+  document.getElementById('confirmation-step').classList.add('hidden');
+
+  // Определяем тип оплаты для отображения
+  const isFullPayment = booking.paymentType === 'FULL';
+  const remainingText = isFullPayment ? '' : `
+        <div class="detail-row remaining-amount">
+          <span class="detail-label">Остаток к оплате:</span>
+          <span class="detail-value">${booking.remainingAmount} USDT</span>
+        </div>
+        <div class="detail-note">
+          Остаток необходимо оплатить перед консультацией
+        </div>
+  `;
+
+  // Создаём блок успеха
+  const successHtml = `
+    <div class="success-container">
+      <div class="success-icon">✅</div>
+      <h2 class="success-title">Запись создана!</h2>
+
+      <div class="success-details">
+        <div class="detail-row">
+          <span class="detail-label">Услуга:</span>
+          <span class="detail-value">${booking.serviceName}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Дата:</span>
+          <span class="detail-value">${booking.date}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Время:</span>
+          <span class="detail-value">${booking.time} (МСК)</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">${isFullPayment ? 'К оплате:' : 'Предоплата:'}</span>
+          <span class="detail-value">${booking.prepayment} USDT</span>
+        </div>
+        ${remainingText}
+      </div>
+
+      <div class="payment-info-box">
+        <div class="payment-info-title">💳 Информация для оплаты</div>
+        <div class="payment-field">
+          <div class="payment-label">Адрес кошелька (USDT TON):</div>
+          <div class="payment-value" id="success-wallet">${TON_WALLET}</div>
+          <button class="copy-btn" onclick="copyToClipboard('${TON_WALLET}'); tg.showAlert('Адрес скопирован!');">📋</button>
+        </div>
+        <div class="payment-field">
+          <div class="payment-label">Комментарий (ОБЯЗАТЕЛЬНО!):</div>
+          <div class="payment-value payment-memo" id="success-memo">${booking.paymentMemo}</div>
+          <button class="copy-btn" onclick="copyToClipboard('${booking.paymentMemo}'); tg.showAlert('Комментарий скопирован!');">📋</button>
+        </div>
+      </div>
+
+      <div class="warning-box">
+        ⚠️ Отправьте <b>USDT в сети TON</b> с указанием комментария.<br>
+        Без комментария платёж не будет зачислен!
+      </div>
+
+      <button class="button button-primary" onclick="goToMyBookings()">Перейти к записям</button>
+    </div>
+  `;
+
+  // Показываем в booking-flow
+  const bookingFlow = document.getElementById('booking-flow');
+  bookingFlow.innerHTML = successHtml;
+
+  // Перезагружаем записи для вкладки "Мои записи"
+  loadUserBookings();
+}
+
+// Переход к вкладке "Мои записи" после успешного создания бронирования
+function goToMyBookings() {
+  // Скрываем booking-flow
+  document.getElementById('booking-flow').classList.add('hidden');
+
+  // Показываем основные табы
+  document.querySelector('.tabs-nav').classList.remove('hidden');
+  document.getElementById('tab-consultations').classList.add('hidden');
+  document.getElementById('tab-bookings').classList.remove('hidden');
+  document.getElementById('tab-referrals').classList.add('hidden');
+
+  // Обновляем активную вкладку
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.classList.remove('active');
+    if (btn.dataset.tab === 'bookings') {
+      btn.classList.add('active');
+    }
+  });
+
+  state.currentTab = 'bookings';
+
+  // Перезагружаем записи
+  loadUserBookings();
 }
 
 function showDateSelection() {
@@ -802,7 +1735,8 @@ async function applyPromoCode() {
   }
 
   if (!state.telegramId) {
-    showPromoError('Ошибка: не удалось определить пользователя');
+    console.error('telegramId не установлен. initDataUnsafe:', tg.initDataUnsafe);
+    showPromoError('Ошибка: откройте приложение через кнопку в боте');
     return;
   }
 
@@ -829,25 +1763,30 @@ async function applyPromoCode() {
       // Промокод валиден
       state.appliedPromoCode = result.promoCode;
 
-      // Рассчитываем скидку
-      const discountAmount = Math.round(state.originalPrepayment * result.promoCode.discountPercent / 100);
-      state.discountedPrepayment = state.originalPrepayment - discountAmount;
+      // Рассчитываем скидку (state.originalPrepayment и state.currentPaymentAmount в ЦЕНТАХ)
+      // originalPrepayment = текущая сумма без скидки в центах
+      const originalAmountCents = state.currentPaymentAmount; // в центах
+      const discountAmountCents = Math.round(originalAmountCents * result.promoCode.discountPercent / 100);
+      const discountedAmountCents = originalAmountCents - discountAmountCents;
+
+      state.originalPrepayment = originalAmountCents; // в центах
+      state.discountedPrepayment = discountedAmountCents; // в центах
 
       // Показываем результат
       promoResult.textContent = `Промокод ${result.promoCode.code} применён! Скидка ${result.promoCode.discountPercent}%`;
       promoResult.className = 'promo-result success';
       promoResult.classList.remove('hidden');
 
-      // Показываем скидку
-      document.getElementById('discount-value').textContent = `-${(discountAmount / 100).toFixed(2)} USDT`;
+      // Показываем скидку (конвертируем центы в доллары для отображения)
+      document.getElementById('discount-value').textContent = `-${(discountAmountCents / 100).toFixed(0)} USDT`;
       promoDiscount.classList.remove('hidden');
 
-      // Показываем итоговую сумму
-      document.getElementById('final-prepayment').textContent = `${(state.discountedPrepayment / 100).toFixed(2)} USDT`;
+      // Показываем итоговую сумму (конвертируем центы в доллары для отображения)
+      document.getElementById('final-prepayment').textContent = `${(discountedAmountCents / 100).toFixed(0)} USDT`;
       promoFinal.classList.remove('hidden');
 
-      // Обновляем сумму в инструкции
-      document.getElementById('ton-amount').textContent = (state.discountedPrepayment / 100).toFixed(2);
+      // Обновляем сумму в инструкции (центы -> доллары, без дробной части)
+      document.getElementById('ton-amount').textContent = (discountedAmountCents / 100).toFixed(0);
 
       // Перечёркиваем старую сумму
       document.getElementById('confirm-prepayment').classList.add('price-strikethrough');

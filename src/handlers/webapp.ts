@@ -29,15 +29,20 @@ export interface WebAppData {
  * Обработчик данных из WebApp (выбор даты и времени)
  */
 export async function handleWebAppData(ctx: Context) {
+  console.log('🎯 [handleWebAppData] Функция вызвана!');
+  console.log('🎯 [handleWebAppData] ctx.from:', ctx.from?.id);
+  console.log('🎯 [handleWebAppData] ctx.message:', JSON.stringify(ctx.message, null, 2));
+
   try {
     if (!ctx.from || !('web_app_data' in ctx.message!)) {
+      console.log('⚠️ [handleWebAppData] Нет from или web_app_data в сообщении');
       return;
     }
 
     const webAppData = (ctx.message as any).web_app_data.data;
     const data: WebAppData = JSON.parse(webAppData);
 
-    console.log('WebApp data received:', data);
+    console.log('✅ [handleWebAppData] WebApp data received:', data);
 
     // Получаем пользователя
     const user = await getUserByTelegramId(ctx.from.id);

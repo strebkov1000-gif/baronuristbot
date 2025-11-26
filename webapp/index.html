@@ -141,7 +141,7 @@
         </div>
 
         <h2>Оплата</h2>
-        <p>Для подтверждения записи внесите предоплату</p>
+        <p>Выберите способ оплаты</p>
 
         <div class="confirmation">
           <div class="confirmation-item">
@@ -165,8 +165,29 @@
             <span class="confirmation-label">Полная стоимость</span>
             <span class="confirmation-value" id="confirm-price">-</span>
           </div>
+
+          <!-- Выбор типа оплаты -->
+          <div class="payment-type-selection">
+            <div class="payment-type-option selected" id="option-prepayment" onclick="selectPaymentType('PREPAYMENT')">
+              <div class="payment-type-radio"></div>
+              <div class="payment-type-content">
+                <div class="payment-type-title">Предоплата 25%</div>
+                <div class="payment-type-amount" id="prepayment-amount">-</div>
+                <div class="payment-type-desc">Остаток оплатите перед консультацией</div>
+              </div>
+            </div>
+            <div class="payment-type-option" id="option-full" onclick="selectPaymentType('FULL')">
+              <div class="payment-type-radio"></div>
+              <div class="payment-type-content">
+                <div class="payment-type-title">Полная оплата</div>
+                <div class="payment-type-amount" id="full-amount">-</div>
+                <div class="payment-type-desc">Оплатите сразу всю сумму</div>
+              </div>
+            </div>
+          </div>
+
           <div class="confirmation-item highlight">
-            <span class="confirmation-label">Предоплата 25%</span>
+            <span class="confirmation-label">К оплате сейчас</span>
             <span class="confirmation-value" id="confirm-prepayment">-</span>
           </div>
 

@@ -41,16 +41,18 @@ export async function showMainMenu(ctx: Context) {
   const isPrivateChat = ctx.chat?.type === 'private';
 
   if (isPrivateChat) {
-    const welcomeText = `<b>Добро пожаловать в PRAVO XII!</b>
+    const welcomeText = `<b>PRAVO XII</b>
 
 Юридические консультации онлайн.
 
-Нажмите кнопку ниже, чтобы открыть приложение:`;
+💬 Поддержка: @nft_lawyer`;
 
+    // Используем inline keyboard с webApp - она корректно передаёт initData
     await ctx.replyWithHTML(
       welcomeText,
       Markup.inlineKeyboard([
-        [Markup.button.webApp('📱 Открыть приложение', config.webapp.url)]
+        [Markup.button.webApp('Записаться на консультацию', config.webapp.url)],
+        [Markup.button.url('Написать в поддержку', 'https://t.me/nft_lawyer')]
       ])
     );
   } else {
@@ -71,9 +73,9 @@ export async function showMainMenu(ctx: Context) {
  * Показывает раздел "Юридические консультации" (старый стартовый экран)
  */
 export async function showConsultationsMenu(ctx: Context) {
-  // Получаем список услуг
+  // Получаем список услуг, сортируем от дешёвых к дорогим
   const services = await prisma.service.findMany({
-    orderBy: { serviceId: 'asc' }
+    orderBy: { priceUsd: 'asc' }
   });
 
   const consultationsText = `<b>📋 Юридические консультации</b>

@@ -1,4 +1,4 @@
-import { Telegraf, session, Context as TelegrafContext } from 'telegraf';
+import { Telegraf, session, Context as TelegrafContext, Markup } from 'telegraf';
 import { config } from './config';
 import { handleStart, showMainMenu, showConsultationsMenu, showMyBookings, showReferralProgram } from './handlers/start';
 import { handleServiceSelect, handleBackToServices } from './handlers/services';
@@ -32,7 +32,10 @@ import {
   handlePromoCommand,
   handlePromosCommand,
   handlePromoDelCommand,
-  handlePendingMemoCommand
+  handlePendingMemoCommand,
+  handleIgnoreTxCommand,
+  handleIgnoredTxsCommand,
+  handleClearIgnoredCommand
 } from './handlers/admin';
 import { startPaymentChecker, cleanupExpiredPayments } from './ton/payment-checker';
 import { cleanupExpiredReservations, startWeeklySlotScheduler } from './services/slots';
@@ -72,6 +75,14 @@ bot.use((ctx, next) => {
   return next();
 });
 
+// Отладка: логирование всех входящих сообщений для диагностики web_app_data
+bot.use((ctx, next) => {
+  if (ctx.message && 'web_app_data' in ctx.message) {
+    console.log('📱 [DEBUG] Получено web_app_data сообщение:', JSON.stringify(ctx.message, null, 2));
+  }
+  return next();
+});
+
 // ===================
 // ОБРАБОТЧИКИ КОМАНД
 // ===================
@@ -101,14 +112,35 @@ bot.command('promo', adminMiddleware, handlePromoCommand);
 bot.command('promos', adminMiddleware, handlePromosCommand);
 bot.command('promodel', adminMiddleware, handlePromoDelCommand);
 
+// Команды управления игнорируемыми транзакциями
+bot.command('ignore_tx', adminMiddleware, handleIgnoreTxCommand);
+bot.command('ignored_txs', adminMiddleware, handleIgnoredTxsCommand);
+bot.command('clear_ignored', adminMiddleware, handleClearIgnoredCommand);
+
 // Команда /help
 bot.command('help', async (ctx) => {
   await ctx.replyWithHTML(
     '<b>📚 Помощь</b>\n\n' +
     'Доступные команды:\n' +
     '/start - Начать работу с ботом\n' +
+    '/support - Связаться с поддержкой\n' +
     '/help - Показать это сообщение\n\n' +
     'Для бронирования консультации нажмите /start и выберите услугу.'
+  );
+});
+
+// Команда /support
+bot.command('support', async (ctx) => {
+  await ctx.replyWithHTML(
+    '<b>💬 Поддержка</b>\n\n' +
+    '━━━━━━━━━━━━━━━━━━━━━\n\n' +
+    'Если у вас возникли вопросы или нужна помощь, свяжитесь с нашим специалистом:\n\n' +
+    '👤 <b>Контакт:</b> @nft_lawyer\n\n' +
+    '━━━━━━━━━━━━━━━━━━━━━\n\n' +
+    '<i>Мы ответим вам в ближайшее время!</i>',
+    Markup.inlineKeyboard([
+      [Markup.button.url('✉️ Написать в поддержку', 'https://t.me/nft_lawyer')]
+    ])
   );
 });
 
@@ -309,18 +341,41 @@ async function main() {
     await prisma.$connect();
     console.log('✅ Подключение к БД установлено');
 
+    // Устанавливаем Menu Button с WebApp
+    try {
+      await bot.telegram.setChatMenuButton({
+        menuButton: {
+          type: 'web_app',
+          text: 'Open',
+          web_app: { url: config.webapp.url }
+        }
+      });
+      console.log('✅ Menu Button установлена');
+    } catch (menuError) {
+      console.error('⚠️ Не удалось установить Menu Button:', menuError);
+    }
+
     // Запускаем WebApp сервер
     startWebAppServer();
 
     // Запускаем периодические задачи
     startPeriodicTasks();
 
-    // Запускаем бота
-    await bot.launch();
+    // Запускаем бота (polling) - используем .then() так как launch() блокирует
+    console.log('🔄 Запуск polling...');
+    bot.launch().then(() => {
+      console.log('⚠️ Polling остановлен');
+    }).catch((err) => {
+      console.error('❌ Ошибка polling:', err);
+    });
 
+    // Даём время на инициализацию polling
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    const botInfo = await bot.telegram.getMe();
     console.log('✅ Бот успешно запущен!');
     console.log(`📦 Окружение: ${config.env}`);
-    console.log(`🤖 Бот: @${(await bot.telegram.getMe()).username}`);
+    console.log(`🤖 Бот: @${botInfo.username}`);
 
     // Graceful shutdown
     process.once('SIGINT', () => {

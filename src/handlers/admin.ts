@@ -12,6 +12,7 @@ import {
   getServiceIdFromShortName,
   getServiceNameById
 } from '../services/promo';
+import { ignoredTransactions } from '../ton/payment-checker';
 
 /**
  * Создаёт дату в UTC без времени (только дата)
@@ -72,6 +73,10 @@ export async function handleAdminCommand(ctx: Context) {
     `<code>/week</code> - На неделю\n` +
     `<code>/confirm ID</code> - Подтвердить оплату\n` +
     `<code>/cancel ID</code> - Отменить\n\n` +
+    `<b>💳 Платежи:</b>\n` +
+    `<code>/ignore_tx HASH</code> - Игнорировать транзакцию\n` +
+    `<code>/ignored_txs</code> - Список игнорируемых\n` +
+    `<code>/clear_ignored</code> - Очистить список\n\n` +
     `<b>🎁 Промокоды:</b>\n` +
     `<code>/promo КОД % ДД.ММ.ГГГГ [услуга]</code> - Создать\n` +
     `<code>/promos</code> - Список промокодов\n` +
@@ -1018,5 +1023,112 @@ export async function handlePendingMemoCommand(ctx: Context) {
   } catch (error) {
     console.error('Ошибка в handlePendingMemoCommand:', error);
     await ctx.reply('Произошла ошибка при получении платежей.');
+  }
+}
+
+// ==========================
+// ИГНОРИРОВАНИЕ ТРАНЗАКЦИЙ
+// ==========================
+
+/**
+ * Команда /ignore_tx HASH - добавить транзакцию в список игнорируемых
+ * Транзакции из этого списка не будут показываться как неопознанные
+ */
+export async function handleIgnoreTxCommand(ctx: Context) {
+  try {
+    const args = ctx.message && 'text' in ctx.message
+      ? ctx.message.text.split(' ').slice(1)
+      : [];
+
+    if (args.length < 1) {
+      await ctx.replyWithHTML(
+        '<b>🔇 Игнорирование транзакции</b>\n\n' +
+        'Использование: <code>/ignore_tx HASH</code>\n\n' +
+        'Пример:\n<code>/ignore_tx abc123def456...</code>\n\n' +
+        'После добавления транзакция не будет показываться в уведомлениях о неопознанных платежах.'
+      );
+      return;
+    }
+
+    const txHash = args[0];
+
+    // Проверяем, не добавлен ли уже
+    if (ignoredTransactions.has(txHash)) {
+      await ctx.reply('ℹ️ Эта транзакция уже в списке игнорируемых.');
+      return;
+    }
+
+    // Добавляем в список игнорируемых
+    ignoredTransactions.add(txHash);
+
+    await ctx.replyWithHTML(
+      `✅ <b>Транзакция добавлена в список игнорируемых</b>\n\n` +
+      `🔗 Hash:\n<code>${txHash}</code>\n\n` +
+      `<i>Всего игнорируемых: ${ignoredTransactions.size}</i>`
+    );
+
+  } catch (error) {
+    console.error('Ошибка в handleIgnoreTxCommand:', error);
+    await ctx.reply('Произошла ошибка при добавлении транзакции в игнор.');
+  }
+}
+
+/**
+ * Команда /ignored_txs - показать список игнорируемых транзакций
+ */
+export async function handleIgnoredTxsCommand(ctx: Context) {
+  try {
+    if (ignoredTransactions.size === 0) {
+      await ctx.reply('📭 Список игнорируемых транзакций пуст.');
+      return;
+    }
+
+    let response = `<b>🔇 Игнорируемые транзакции (${ignoredTransactions.size})</b>\n\n`;
+
+    let index = 1;
+    for (const txHash of ignoredTransactions) {
+      // Показываем сокращённый хэш для удобства
+      const shortHash = txHash.length > 20
+        ? `${txHash.slice(0, 10)}...${txHash.slice(-10)}`
+        : txHash;
+      response += `${index}. <code>${shortHash}</code>\n`;
+      index++;
+
+      // Ограничиваем вывод для длинных списков
+      if (index > 50) {
+        response += `\n... и ещё ${ignoredTransactions.size - 50} транзакций`;
+        break;
+      }
+    }
+
+    response += `\n\n<i>Для очистки списка: /clear_ignored</i>`;
+
+    await ctx.replyWithHTML(response);
+
+  } catch (error) {
+    console.error('Ошибка в handleIgnoredTxsCommand:', error);
+    await ctx.reply('Произошла ошибка при получении списка.');
+  }
+}
+
+/**
+ * Команда /clear_ignored - очистить список игнорируемых транзакций
+ */
+export async function handleClearIgnoredCommand(ctx: Context) {
+  try {
+    const count = ignoredTransactions.size;
+
+    if (count === 0) {
+      await ctx.reply('📭 Список игнорируемых транзакций уже пуст.');
+      return;
+    }
+
+    ignoredTransactions.clear();
+
+    await ctx.reply(`✅ Список игнорируемых транзакций очищен (удалено: ${count}).`);
+
+  } catch (error) {
+    console.error('Ошибка в handleClearIgnoredCommand:', error);
+    await ctx.reply('Произошла ошибка при очистке списка.');
   }
 }
