@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0D0D0D">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>PRAVO XII</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <div class="logo">PRAVO XII</div>
+      <p class="subtitle">Юридические консультации</p>
+    </div>
+
+    <!-- Tabs Navigation -->
+    <div class="tabs-nav">
+      <button class="tab-btn active" data-tab="consultations">
+        <span class="tab-icon">📋</span>
+        <span class="tab-text">Консультации</span>
+      </button>
+      <button class="tab-btn" data-tab="bookings">
+        <span class="tab-icon">📅</span>
+        <span class="tab-text">Записи</span>
+      </button>
+      <button class="tab-btn" data-tab="referrals">
+        <span class="tab-icon">👥</span>
+        <span class="tab-text">Рефералы</span>
+      </button>
+    </div>
+
+    <!-- Tab: Consultations (Services) -->
+    <div id="tab-consultations" class="tab-content active">
+      <div class="services-grid" id="services-grid">
+        <!-- Карточки услуг будут добавлены через JS -->
+      </div>
+    </div>
+
+    <!-- Tab: My Bookings -->
+    <div id="tab-bookings" class="tab-content hidden">
+      <div class="bookings-container" id="bookings-container">
+        <!-- Бронирования будут добавлены через JS -->
+      </div>
+    </div>
+
+    <!-- Tab: Referrals -->
+    <div id="tab-referrals" class="tab-content hidden">
+      <div class="referrals-container" id="referrals-container">
+        <!-- Реферальная информация будет добавлена через JS -->
+      </div>
+    </div>
+
+    <!-- Booking Flow (скрыт до выбора услуги) -->
+    <div id="booking-flow" class="hidden">
+      <div class="steps">
+        <div class="step active" id="step-1">
+          <div class="step-number"><span>1</span></div>
+          <div class="step-label">Дата</div>
+        </div>
+        <div class="step-connector"></div>
+        <div class="step" id="step-2">
+          <div class="step-number"><span>2</span></div>
+          <div class="step-label">Время</div>
+        </div>
+        <div class="step-connector"></div>
+        <div class="step" id="step-3">
+          <div class="step-number"><span>3</span></div>
+          <div class="step-label">Оплата</div>
+        </div>
+      </div>
+
+      <!-- Шаг 1: Выбор даты -->
+      <div id="date-selection" class="step-content">
+        <div class="service-header">
+          <button class="back-button" id="back-to-services">
+            <span class="back-arrow">←</span> Назад
+          </button>
+          <div class="service-title" id="service-name">Загрузка...</div>
+          <div class="service-price" id="service-price"></div>
+        </div>
+
+        <h2>Выберите дату</h2>
+        <p>Доступные даты отмечены зелёной точкой</p>
+
+        <div class="calendar-container">
+          <div class="calendar-header">
+            <button class="button-nav" id="prev-month">‹</button>
+            <div class="calendar-month" id="current-month">Январь 2024</div>
+            <button class="button-nav" id="next-month">›</button>
+          </div>
+
+          <div class="calendar-grid" id="calendar-grid">
+            <div class="calendar-day-header">Пн</div>
+            <div class="calendar-day-header">Вт</div>
+            <div class="calendar-day-header">Ср</div>
+            <div class="calendar-day-header">Чт</div>
+            <div class="calendar-day-header">Пт</div>
+            <div class="calendar-day-header">Сб</div>
+            <div class="calendar-day-header">Вс</div>
+          </div>
+        </div>
+
+        <button class="button button-primary" id="continue-to-time" disabled>
+          Выбрать время
+        </button>
+      </div>
+
+      <!-- Шаг 2: Выбор времени -->
+      <div id="time-selection" class="step-content hidden">
+        <div class="service-header">
+          <button class="back-button" id="back-to-date">
+            <span class="back-arrow">←</span> Назад
+          </button>
+          <div class="service-title" id="service-name-2"></div>
+        </div>
+
+        <h2>Выберите время</h2>
+        <p id="selected-date-display">-</p>
+
+        <div class="time-slots-container">
+          <div class="time-slots-grid" id="time-slots-grid">
+            <!-- Слоты будут добавлены через JS -->
+          </div>
+        </div>
+
+        <button class="button button-primary" id="continue-to-confirm" disabled>
+          Продолжить
+        </button>
+      </div>
+
+      <!-- Шаг 3: Подтверждение и оплата -->
+      <div id="confirmation-step" class="step-content hidden">
+        <div class="service-header">
+          <button class="back-button" id="back-to-time">
+            <span class="back-arrow">←</span> Назад
+          </button>
+        </div>
+
+        <h2>Оплата</h2>
+        <p>Для подтверждения записи внесите предоплату</p>
+
+        <div class="confirmation">
+          <div class="confirmation-item">
+            <span class="confirmation-label">Услуга</span>
+            <span class="confirmation-value" id="confirm-service">-</span>
+          </div>
+          <div class="confirmation-item">
+            <span class="confirmation-label">Дата</span>
+            <span class="confirmation-value" id="confirm-date">-</span>
+          </div>
+          <div class="confirmation-item">
+            <span class="confirmation-label">Время</span>
+            <span class="confirmation-value" id="confirm-time">-</span>
+          </div>
+          <div class="confirmation-item">
+            <span class="confirmation-label">Длительность</span>
+            <span class="confirmation-value" id="confirm-duration">60 мин</span>
+          </div>
+          <div class="confirmation-divider"></div>
+          <div class="confirmation-item">
+            <span class="confirmation-label">Полная стоимость</span>
+            <span class="confirmation-value" id="confirm-price">-</span>
+          </div>
+          <div class="confirmation-item highlight">
+            <span class="confirmation-label">Предоплата 25%</span>
+            <span class="confirmation-value" id="confirm-prepayment">-</span>
+          </div>
+
+          <!-- Промокод -->
+          <div class="promo-section">
+            <div class="promo-input-wrapper">
+              <input type="text" id="promo-code" placeholder="Введите промокод" maxlength="20" />
+              <button id="apply-promo" class="promo-btn">Применить</button>
+            </div>
+            <div id="promo-result" class="promo-result hidden"></div>
+            <div id="promo-discount" class="promo-discount hidden">
+              <span class="promo-discount-label">Скидка</span>
+              <span class="promo-discount-value" id="discount-value">-</span>
+            </div>
+            <div id="promo-final" class="confirmation-item highlight promo-final hidden">
+              <span class="confirmation-label">К оплате</span>
+              <span class="confirmation-value" id="final-prepayment">-</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="payment-info">
+          <div class="payment-wallet">
+            <div class="payment-label">Адрес кошелька (USDT в сети TON):</div>
+            <div class="payment-address" id="wallet-address">UQCVeQzrFSinGaW-rX-_kBh5AJxpok2NMtzg9VmqGiMgYOW8</div>
+            <button class="copy-btn" id="copy-wallet">Копировать</button>
+          </div>
+
+          <div class="payment-memo">
+            <div class="payment-label memo-label">📝 ОБЯЗАТЕЛЬНЫЙ КОММЕНТАРИЙ:</div>
+            <div class="payment-memo-value" id="payment-memo">Загрузка...</div>
+            <button class="copy-btn" id="copy-memo">Копировать</button>
+          </div>
+
+          <div class="payment-warning">
+            <p>⚠️ <strong>ВАЖНО:</strong></p>
+            <p>• Отправляйте <strong>USDT в сети TON</strong> (не TON!)</p>
+            <p>• <strong>ОБЯЗАТЕЛЬНО</strong> укажите комментарий при переводе</p>
+            <p>• Без комментария платёж <strong>НЕ БУДЕТ</strong> зачислен!</p>
+          </div>
+
+          <div class="payment-instructions">
+            <p>1. Откройте ваш TON кошелёк (Tonkeeper, Tonhub)</p>
+            <p>2. Выберите <strong>USDT</strong></p>
+            <p>3. Адрес: скопируйте выше</p>
+            <p>4. Сумма: <strong id="ton-amount">0</strong> USDT</p>
+            <p>5. Комментарий: <strong id="memo-instruction">см. выше</strong></p>
+            <p>6. Подтвердите перевод</p>
+          </div>
+
+          <div class="payment-auto-info">
+            ✅ Платёж зачислится автоматически в течение 1-2 минут
+          </div>
+        </div>
+
+        <button class="button button-primary" id="confirm-booking">
+          Подтвердить бронирование
+        </button>
+      </div>
+    </div>
+
+    <!-- Загрузчик -->
+    <div id="loader" class="loader hidden"></div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
