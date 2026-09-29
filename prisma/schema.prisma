@@ -7,8 +7,8 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model available_slots {
-  id        String   @id
+model AvailableSlot {
+  id        String   @id @default(cuid())
   date      DateTime @db.Date
   startTime String
   endTime   String
@@ -20,10 +20,11 @@ model available_slots {
   @@unique([date, startTime])
   @@index([date])
   @@index([isBooked])
+  @@map("available_slots")
 }
 
-model bookings {
-  id                   String         @id
+model Booking {
+  id                   String         @id @default(cuid())
   userId               String
   serviceId            String
   startTime            DateTime
@@ -33,15 +34,15 @@ model bookings {
   cancelledAt          DateTime?
   cancellationReason   String?
   createdAt            DateTime       @default(now())
-  updatedAt            DateTime
+  updatedAt            DateTime       @updatedAt
   paymentType          payment_type   @default(PREPAYMENT)
   prepaidAmountUsd     Int            @default(0)
   remainingAmountUsd   Int            @default(0)
   totalPriceUsd        Int            @default(0)
   remainingPaymentMemo String?
-  services             services       @relation(fields: [serviceId], references: [id])
-  users                users          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  payments             payments?
+  service              Service        @relation(fields: [serviceId], references: [id])
+  user                 User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payment              Payment?
 
   @@unique([userId, startTime])
   @@index([paymentStatus])
@@ -49,10 +50,11 @@ model bookings {
   @@index([startTime])
   @@index([status])
   @@index([userId])
+  @@map("bookings")
 }
 
-model payments {
-  id                 String            @id
+model Payment {
+  id                 String            @id @default(cuid())
   bookingId          String            @unique
   userId             String
   amountUsd          Int
@@ -69,45 +71,48 @@ model payments {
   paymentMemo        String?           @unique
   promoInfo          String?
   receivedAmountUsd  Int?
-  bookings           bookings          @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  users              users             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  booking            Booking           @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  user               User              @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([paymentMemo])
   @@index([status])
   @@index([tonTransactionHash])
   @@index([userId])
+  @@map("payments")
 }
 
-model promo_code_usages {
-  id             String      @id
+model PromoCodeUsage {
+  id             String    @id @default(cuid())
   promoCodeId    String
   userId         String
   bookingId      String
   discountAmount Int
-  createdAt      DateTime    @default(now())
-  promo_codes    promo_codes @relation(fields: [promoCodeId], references: [id])
+  createdAt      DateTime  @default(now())
+  promoCode      PromoCode @relation(fields: [promoCodeId], references: [id])
 
   @@unique([promoCodeId, userId])
   @@index([userId])
+  @@map("promo_code_usages")
 }
 
-model promo_codes {
-  id                String              @id
-  code              String              @unique
-  discountPercent   Int
-  expiresAt         DateTime
-  serviceId         String?
-  isActive          Boolean             @default(true)
-  createdBy         BigInt
-  createdAt         DateTime            @default(now())
-  promo_code_usages promo_code_usages[]
+model PromoCode {
+  id              String           @id @default(cuid())
+  code            String           @unique
+  discountPercent Int
+  expiresAt       DateTime
+  serviceId       String?
+  isActive        Boolean          @default(true)
+  createdBy       BigInt
+  createdAt       DateTime         @default(now())
+  usages          PromoCodeUsage[]
 
   @@index([code])
   @@index([isActive])
+  @@map("promo_codes")
 }
 
-model reservations {
-  id        String             @id
+model Reservation {
+  id        String             @id @default(cuid())
   userId    String
   serviceId String
   startTime DateTime
@@ -115,33 +120,35 @@ model reservations {
   expiresAt DateTime
   status    reservation_status @default(ACTIVE)
   createdAt DateTime           @default(now())
-  users     users              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([expiresAt])
   @@index([startTime])
   @@index([status])
   @@index([userId])
+  @@map("reservations")
 }
 
-model services {
-  id              String     @id
-  serviceId       String     @unique
+model Service {
+  id              String    @id @default(cuid())
+  serviceId       String    @unique
   name            String
   nameEn          String?
   description     String
   stages          String
   priceUsd        Int
   durationMinutes Int
-  requiresBooking Boolean    @default(true)
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime
-  bookings        bookings[]
+  requiresBooking Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  bookings        Booking[]
 
   @@index([serviceId])
+  @@map("services")
 }
 
-model user_surveys {
-  id                 String        @id
+model UserSurvey {
+  id                 String        @id @default(cuid())
   userId             String
   serviceId          String
   bookingId          String?
@@ -153,33 +160,35 @@ model user_surveys {
   status             survey_status @default(PENDING)
   processedAt        DateTime?
   createdAt          DateTime      @default(now())
-  updatedAt          DateTime
-  users              users         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  updatedAt          DateTime      @updatedAt
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([status])
   @@index([userId])
+  @@map("user_surveys")
 }
 
-model users {
-  id            String         @id
-  telegramId    BigInt         @unique
+model User {
+  id            String        @id @default(cuid())
+  telegramId    BigInt        @unique
   username      String?
   firstName     String?
   lastName      String?
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime
-  referralBonus Int            @default(0)
-  referralCode  String?        @unique
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  referralBonus Int           @default(0)
+  referralCode  String?       @unique
   referredById  String?
-  bookings      bookings[]
-  payments      payments[]
-  reservations  reservations[]
-  user_surveys  user_surveys[]
-  users         users?         @relation("usersTousers", fields: [referredById], references: [id])
-  other_users   users[]        @relation("usersTousers")
+  bookings      Booking[]
+  payments      Payment[]
+  reservations  Reservation[]
+  surveys       UserSurvey[]
+  referrer      User?         @relation("UserReferrals", fields: [referredById], references: [id])
+  referrals     User[]        @relation("UserReferrals")
 
   @@index([referralCode])
   @@index([telegramId])
+  @@map("users")
 }
 
 enum booking_status {
